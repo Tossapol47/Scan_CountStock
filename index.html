@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f766e">
+<title>สแกนรับสต๊อก</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{--bg:#f4f6f8;--card:#fff;--fg:#14213d;--muted:#64748b;--pri:#0f766e;--danger:#dc2626;--line:#e2e8f0}
+  @media (prefers-color-scheme:dark){:root{--bg:#0b1220;--card:#162033;--fg:#e8eefc;--muted:#94a3b8;--line:#263248}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Sarabun",sans-serif;padding:0 16px calc(90px + env(safe-area-inset-bottom))}
+  h1{font-size:1.2rem;margin:14px 0}
+  .card{background:var(--card);border-radius:14px;padding:12px;margin-bottom:12px;box-shadow:0 1px 3px #0002}
+  #reader{width:100%;border-radius:10px;overflow:hidden;background:#000;min-height:60px}
+  button{font:inherit;border:0;border-radius:10px;padding:12px 14px;background:var(--pri);color:#fff;font-weight:600}
+  button.sec{background:var(--line);color:var(--fg)}
+  button.del{background:transparent;color:var(--danger);padding:6px 10px}
+  .row{display:flex;gap:8px;align-items:center}
+  .row>*{flex:1}
+  input{font:inherit;width:100%;padding:11px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+  label.chk{display:flex;gap:8px;align-items:center;font-size:.9rem;color:var(--muted);margin-top:10px}
+  label.chk input{width:auto}
+  .last{margin-top:10px;font-size:.95rem;min-height:1.4em;color:var(--muted)}
+  .last b{color:var(--pri)}
+  .item{display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
+  .item:last-child{border:0}
+  .code{flex:1;word-break:break-all;font-weight:600}
+  .code small{display:block;font-weight:400;color:var(--muted)}
+  .qty{display:flex;align-items:center;gap:4px}
+  .qty button{padding:6px 12px;background:var(--line);color:var(--fg)}
+  .qty input{width:64px;text-align:center;padding:8px}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:var(--card);padding:10px 16px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;box-shadow:0 -2px 8px #0003}
+  .bar button{flex:1}
+  .total{color:var(--muted);font-size:.9rem;margin-bottom:6px}
+  .flash{animation:f .5s}
+  @keyframes f{from{background:#0f766e44}to{background:transparent}}
+</style>
+</head>
+<body>
+<h1>📦 สแกนรับสต๊อก</h1>
+
+<div class="card">
+  <div id="reader"></div>
+  <div class="row" style="margin-top:10px">
+    <button id="toggle">▶ เปิดกล้อง</button>
+    <button id="torch" class="sec" hidden>🔦 ไฟฉาย</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="askQty"> ถามจำนวนทุกครั้งที่สแกน (ปกติ +1 อัตโนมัติ)</label>
+  <div class="last" id="last">พร้อมสแกน QR / บาร์โค้ด</div>
+</div>
+
+<div class="card">
+  <div class="row">
+    <input id="manual" placeholder="พิมพ์รหัสเอง" inputmode="text" autocomplete="off">
+    <button id="add" style="flex:0 0 auto">เพิ่ม</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="total" id="total"></div>
+  <div id="list"></div>
+</div>
+
+<div class="bar">
+  <button id="export">⬇ ส่งออก Excel</button>
+  <button id="clear" class="sec">ล้างข้อมูล</button>
+</div>
+
+<script>
+const KEY = "scan_countstock_v1";
+let data = load();            // { code: {qty, first, last} }
+let log = loadLog();          // [{time, code, qty}]
+let scanner = null, running = false, torchOn = false;
+let lastCode = "", lastAt = 0;
+
+function load(){ try{ return JSON.parse(localStorage.getItem(KEY)) || {}; }catch(e){ return {}; } }
+function loadLog(){ try{ return JSON.parse(localStorage.getItem(KEY+"_log")) || []; }catch(e){ return []; } }
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(data)); localStorage.setItem(KEY+"_log", JSON.stringify(log)); }catch(e){} }
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const now = () => new Date().toLocaleString("th-TH", {hour12:false});
+
+function beep(){
+  try{
+    const c = new (window.AudioContext||window.webkitAudioContext)();
+    const o = c.createOscillator(); o.frequency.value = 880; o.connect(c.destination);
+    o.start(); setTimeout(()=>{o.stop(); c.close();}, 120);
+  }catch(e){}
+  if(navigator.vibrate) navigator.vibrate(60);
+}
+
+function addCode(code, qty){
+  code = String(code).trim();
+  if(!code || !(qty > 0)) return;
+  const t = now();
+  const it = data[code] || (data[code] = {qty:0, first:t, last:t});
+  it.qty += qty; it.last = t;
+  log.push({time:t, code, qty});
+  save(); render(code);
+  $("last").innerHTML = `ล่าสุด: <b>${esc(code)}</b> (รวม ${it.qty})`;
+}
+
+function onScan(text){
+  const t = Date.now();
+  if(text === lastCode && t - lastAt < 1500){ lastAt = t; return; }  // กันสแกนซ้ำรัว
+  lastCode = text; lastAt = t;
+  beep();
+  let q = 1;
+  if($("askQty").checked){
+    const a = prompt(`จำนวนสำหรับ\n${text}`, "1");
+    if(a === null) return;
+    q = parseFloat(a);
+    if(!(q > 0)) return;
+  }
+  addCode(text, q);
+}
+
+function render(flashCode){
+  const keys = Object.keys(data).sort((a,b)=> data[b].last.localeCompare(data[a].last) );
+  const units = keys.reduce((s,k)=>s+data[k].qty,0);
+  $("total").textContent = `${keys.length} รายการ · รวม ${units} ชิ้น`;
+  $("list").innerHTML = keys.length ? keys.map(k=>`
+    <div class="item ${k===flashCode?'flash':''}">
+      <div class="code">${esc(k)}<small>${esc(data[k].last)}</small></div>
+      <div class="qty">
+        <button data-a="dec" data-k="${esc(k)}">−</button>
+        <input type="number" inputmode="decimal" value="${data[k].qty}" data-a="set" data-k="${esc(k)}">
+        <button data-a="inc" data-k="${esc(k)}">+</button>
+      </div>
+      <button class="del" data-a="del" data-k="${esc(k)}">✕</button>
+    </div>`).join("") : '<div style="color:var(--muted)">ยังไม่มีรายการ</div>';
+}
+
+$("list").addEventListener("click", e=>{
+  const b = e.target.closest("button"); if(!b) return;
+  const k = b.dataset.k;
+  if(b.dataset.a==="inc") data[k].qty++;
+  else if(b.dataset.a==="dec") data[k].qty = Math.max(0, data[k].qty-1);
+  else if(b.dataset.a==="del"){ if(!confirm(`ลบ ${k}?`)) return; delete data[k]; }
+  save(); render();
+});
+$("list").addEventListener("change", e=>{
+  const i = e.target; if(i.dataset.a!=="set") return;
+  const v = parseFloat(i.value); data[i.dataset.k].qty = v >= 0 ? v : 0;
+  save(); render();
+});
+
+$("add").onclick = ()=>{ const v=$("manual").value; if(v.trim()){ addCode(v,1); $("manual").value=""; } };
+$("manual").addEventListener("keydown", e=>{ if(e.key==="Enter") $("add").click(); });
+
+async function start(){
+  if(!window.isSecureContext){ alert("ต้องเปิดผ่าน HTTPS เพื่อใช้กล้อง"); return; }
+  scanner = scanner || new Html5Qrcode("reader", {
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.QR_CODE, Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8, Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E, Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39, Html5QrcodeSupportedFormats.CODE_93,
+      Html5QrcodeSupportedFormats.ITF, Html5QrcodeSupportedFormats.CODABAR,
+      Html5QrcodeSupportedFormats.DATA_MATRIX
+    ],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true }
+  });
+  try{
+    await scanner.start({facingMode:"environment"},
+      {fps:10, qrbox:(w,h)=>({width:Math.floor(w*0.85), height:Math.floor(Math.min(h,w)*0.55)})},
+      onScan, ()=>{});
+    running = true; $("toggle").textContent = "■ ปิดกล้อง";
+    try{ const caps = scanner.getRunningTrackCapabilities(); if(caps && caps.torch) $("torch").hidden = false; }catch(e){}
+  }catch(err){
+    alert("เปิดกล้องไม่ได้: " + err + "\nโปรดอนุญาตการใช้กล้องในเบราว์เซอร์");
+  }
+}
+async function stop(){
+  try{ await scanner.stop(); }catch(e){}
+  running = false; torchOn = false; $("toggle").textContent = "▶ เปิดกล้อง"; $("torch").hidden = true;
+}
+$("toggle").onclick = ()=> running ? stop() : start();
+$("torch").onclick = async ()=>{
+  torchOn = !torchOn;
+  try{ await scanner.applyVideoConstraints({advanced:[{torch:torchOn}]}); }catch(e){ torchOn = !torchOn; }
+};
+
+$("export").onclick = ()=>{
+  const keys = Object.keys(data);
+  if(!keys.length){ alert("ยังไม่มีข้อมูล"); return; }
+  const rows = [["ลำดับ","รหัสสินค้า/บาร์โค้ด","จำนวนรับ","สแกนครั้งแรก","สแกนล่าสุด"]];
+  keys.forEach((k,i)=> rows.push([i+1, k, data[k].qty, data[k].first, data[k].last]));
+  const ws1 = XLSX.utils.aoa_to_sheet(rows);
+  ws1["!cols"] = [{wch:6},{wch:30},{wch:12},{wch:22},{wch:22}];
+  const ws2 = XLSX.utils.aoa_to_sheet([["เวลา","รหัส","จำนวน"], ...log.map(l=>[l.time,l.code,l.qty])]);
+  ws2["!cols"] = [{wch:22},{wch:30},{wch:10}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws1, "สรุปสต๊อก");
+  XLSX.utils.book_append_sheet(wb, ws2, "ประวัติสแกน");
+  const d = new Date(), p = n=>String(n).padStart(2,"0");
+  XLSX.writeFile(wb, `stock_${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.xlsx`);
+};
+
+$("clear").onclick = ()=>{
+  if(confirm("ล้างข้อมูลทั้งหมด? (ควรส่งออก Excel ก่อน)")){ data = {}; log = []; save(); render(); $("last").textContent = "ล้างข้อมูลแล้ว"; }
+};
+
+render();
+</script>
+</body>
+</html>
