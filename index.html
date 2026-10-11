@@ -48,6 +48,7 @@
     <button id="toggle">▶ เปิดกล้อง</button>
     <button id="torch" class="sec" hidden>🔦 ไฟฉาย</button>
   </div>
+  <label class="chk"><input type="checkbox" id="voice" checked> เสียงพูด "นับแล้ว" เมื่อสแกนสำเร็จ</label>
   <label class="chk"><input type="checkbox" id="askQty"> ถามจำนวนทุกครั้งที่สแกน (ปกติ +1 อัตโนมัติ)</label>
   <div class="last" id="last">พร้อมสแกน QR / บาร์โค้ด</div>
 </div>
@@ -83,13 +84,30 @@ const $ = id => document.getElementById(id);
 const esc = s => s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const now = () => new Date().toLocaleString("th-TH", {hour12:false});
 
+let actx = null;
+function unlockAudio(){   // ต้องเรียกจากการกดปุ่ม มือถือถึงจะยอมให้มีเสียง
+  try{ actx = actx || new (window.AudioContext||window.webkitAudioContext)(); if(actx.state==="suspended") actx.resume(); }catch(e){}
+  try{ if(window.speechSynthesis){ const u=new SpeechSynthesisUtterance(" "); u.volume=0; speechSynthesis.speak(u); } }catch(e){}
+}
 function beep(){
   try{
-    const c = new (window.AudioContext||window.webkitAudioContext)();
-    const o = c.createOscillator(); o.frequency.value = 880; o.connect(c.destination);
-    o.start(); setTimeout(()=>{o.stop(); c.close();}, 120);
+    if(actx){
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = "square"; o.frequency.value = 1200; g.gain.value = 0.5;
+      o.connect(g); g.connect(actx.destination);
+      o.start(); o.stop(actx.currentTime + 0.15);
+    }
   }catch(e){}
-  if(navigator.vibrate) navigator.vibrate(60);
+  if(navigator.vibrate) navigator.vibrate(80);
+}
+function speak(text){
+  if(!$("voice").checked || !window.speechSynthesis) return;
+  try{
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = "th-TH"; u.rate = 1.1; u.volume = 1;
+    speechSynthesis.speak(u);
+  }catch(e){}
 }
 
 function addCode(code, qty){
@@ -116,6 +134,7 @@ function onScan(text){
     if(!(q > 0)) return;
   }
   addCode(text, q);
+  speak("นับแล้ว");
 }
 
 function render(flashCode){
@@ -152,6 +171,7 @@ $("add").onclick = ()=>{ const v=$("manual").value; if(v.trim()){ addCode(v,1); 
 $("manual").addEventListener("keydown", e=>{ if(e.key==="Enter") $("add").click(); });
 
 async function start(){
+  unlockAudio();
   if(!window.isSecureContext){ alert("ต้องเปิดผ่าน HTTPS เพื่อใช้กล้อง"); return; }
   scanner = scanner || new Html5Qrcode("reader", {
     formatsToSupport: [
