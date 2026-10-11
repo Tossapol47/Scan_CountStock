@@ -185,9 +185,12 @@ async function start(){
     experimentalFeatures: { useBarCodeDetectorIfSupported: true }
   });
   try{
+    // สแกนทั้งเฟรม (ไม่จำกัดกรอบ) + ขอความละเอียดสูง เพื่ออ่านบาร์โค้ดเล็ก/เส้นถี่
     await scanner.start({facingMode:"environment"},
-      {fps:10, qrbox:(w,h)=>({width:Math.floor(w*0.85), height:Math.floor(Math.min(h,w)*0.55)})},
+      {fps:15, aspectRatio:1.7778,
+       videoConstraints:{facingMode:"environment", width:{ideal:1920}, height:{ideal:1080}}},
       onScan, ()=>{});
+    try{ await scanner.applyVideoConstraints({advanced:[{focusMode:"continuous"}]}); }catch(e){}
     running = true; $("toggle").textContent = "■ ปิดกล้อง";
     try{ const caps = scanner.getRunningTrackCapabilities(); if(caps && caps.torch) $("torch").hidden = false; }catch(e){}
   }catch(err){
